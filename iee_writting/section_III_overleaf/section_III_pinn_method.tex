@@ -1,26 +1,36 @@
-% Section III only: Physics-Informed Neural Network Method.
-% Insert this file from the paper root with:
-%   \input{section_III_overleaf/section_III_pinn_method.tex}
-% Required packages are listed in README_OVERLEAF.md.
-
-% This path works both when the folder is compiled as a standalone Overleaf
-% project and when the section is input from a full paper at project root.
-\newcommand{\pinnmethodfigure}{fig01_pinn_method_pipeline.pdf}
-\IfFileExists{section_III_overleaf/fig01_pinn_method_pipeline.pdf}{%
-    \renewcommand{\pinnmethodfigure}{section_III_overleaf/fig01_pinn_method_pipeline.pdf}%
-}{}
-
 \section{Physics-Informed Neural Network Method}
 \label{sec:pinn-method}
 
-This section describes the PINN used in this study. The Lorenz--1960 equations,
+This section describes how we use the PINN used in our study. The Lorenz--1960 equations,
 their coefficients, and the initial state are defined in Section~II. The model
 takes time as input and returns the three state variables. Figure~\ref{fig:pinn-pipeline}
 shows the full computation used during training.
 
-\begin{figure}[t]
+\begin{figure}[htbp]
     \centering
-    \includegraphics[width=\columnwidth]{\pinnmethodfigure}
+    \begin{tikzpicture}[
+        node distance=3mm,
+        stage/.style={draw, rounded corners, align=center,
+            text width=0.86\columnwidth, inner sep=4pt, font=\footnotesize},
+        flow/.style={-{Stealth}, thick}
+    ]
+        \node[stage] (input) {Collocation times $t_i$};
+        \node[stage, below=of input] (network)
+            {Neural network $\mathcal{N}(t_i;\theta)$\\
+             Four hidden layers, 60 tanh neurons each};
+        \node[stage, below=of network] (trial)
+            {Hard trial solution\\$u_T(t_i)=u_0+g(t_i)\mathcal{N}(t_i;\theta)$};
+        \node[stage, below=of trial] (residual)
+            {Automatic differentiation and Lorenz equations\\
+             $r(t_i)=\frac{d u_T}{dt}(t_i)-f(u_T(t_i))$};
+        \node[stage, below=of residual] (loss)
+            {Physics loss $\mathcal{L}=\frac{1}{3N_c}\sum_i\|r(t_i)\|_2^2$\\
+             Full-batch Adam update of $\theta$};
+        \draw[flow] (input) -- (network);
+        \draw[flow] (network) -- (trial);
+        \draw[flow] (trial) -- (residual);
+        \draw[flow] (residual) -- (loss);
+    \end{tikzpicture}
     \caption{PINN training path used in the reported experiment. Time is mapped
     to a three-state neural output. The output is placed inside a hard trial
     solution. Automatic differentiation supplies its time derivative. The
@@ -33,54 +43,53 @@ shows the full computation used during training.
 
 Let
 \begin{equation}
-    \mathcal{N}(t;\theta):\mathbb{R}\rightarrow\mathbb{R}^{3}
+    \mathcal{N}(t_i;\theta):\mathbb{R}\rightarrow\mathbb{R}^{3}
     \label{eq:network-map}
 \end{equation}
-denote the neural network. Its input is the scalar time $t$. Its output has
-three entries for $x$, $y$, and $z$. The network is a fully connected multilayer
+which denotes the neural network. The function takes the input t which is the scaler time and then returns the output that has three entries for $x$, $y$, and $z$. The network is a fully connected  with multilayer
 perceptron. It has four hidden layers. Each hidden layer has 60 neurons and uses
-the hyperbolic tangent activation. The output layer is linear. We use
-Xavier-uniform weights and zero biases at initialization. The architecture is
-therefore $1\text{-}60\text{-}60\text{-}60\text{-}60\text{-}3$. It has 11,283
-trainable parameters. This count includes all weights and biases.
+ hyperbolic tangent activation. The output layer is linear. For initialization we use
+Xavier-uniform weights and zero biases. So,our architecture becomes $1\text{-}60\text{-}60\text{-}60\text{-}60\text{-}3$. It has 11,283
+trainable parameters $\theta$ including all weights and biases.
 
 \subsection{Hard Initial-Condition Enforcement}
 
-The raw network output is not used as the final solution. We define the trial
-solution as
+The network defined above can approximate arbitrary continuous
+functions. However, it does not guaranty that the solution starts from
+the correct initial state. To satisfy this constraint exactly,we construct a hard trial solution that contains the network output. The raw network output $\mathcal{N}(t_i;\theta)$ is not used as the final solution.
+ Instead, we define the trial solution as
 \begin{equation}
-    u_T(t)=u_0+g(t)\mathcal{N}(t;\theta),
+    u_T(t_i)=u_0+g(t_i)\mathcal{N}(t_i;\theta),
     \qquad
-    g(t)=\frac{t-t_0}{t_f-t_0},
+    g(t_i)=\frac{t_i-t_0}{t_f-t_0},
     \label{eq:trial-solution}
 \end{equation}
-where $u_0$ is the fixed initial state and $[t_0,t_f]$ is the time interval.
-For the reported experiment, $t_0=0$ and $t_f=1$, so $g(t)=t$. At the initial
+Here, $u_0$ is the fixed initial state and $[t_0,t_f]$ is the time interval.
+For the experiment, we set  $t_0=0$ and $t_f=1$ which gives $g(t_i)=t_i$. At the initial
 time, $g(t_0)=0$. Therefore,
 \begin{equation}
     u_T(t_0)=u_0.
     \label{eq:hard-ic}
 \end{equation}
-This equality holds for every value of $\theta$. The initial condition is thus
-satisfied by construction. The reported run does not add an initial-condition
-penalty to the loss. A soft-penalty option exists in the code, but it is not part
-of the reported experiment.
+Since this equality holds for every \(\theta\), the initial condition is satisfied exactly by construction.
+ The reported run does not add an initial-condition
+penalty to the loss.
 
 \subsection{Automatic-Differentiation Residual}
 
-The PINN is trained from the differential equations. For a trial solution
+Once the initial condition is included in the trial solution, the next step is to ensure that the solution satisfies the governing differential equations at the interior time points. To do this, we define a physics residual and evaluate it using automatic differentiation. Then we use the resulting residual to train the PINN. For a trial solution
 $u_T=(x_T,y_T,z_T)$, the residual is
 \begin{equation}
-    r(t)=\frac{d u_T(t)}{d t}-f\bigl(u_T(t)\bigr).
+    r(t_i)=\frac{d u_T(t_i)}{d t}-f\bigl(u_T(t_i)\bigr).
     \label{eq:physics-residual}
 \end{equation}
-The right-hand side uses the reduced Lorenz--1960 form
+The right-hand side uses the reduced Lorenz system
 \begin{equation}
     f(u_T)=
     \left(c_x y_Tz_T,\;c_y x_Tz_T,\;c_z x_Ty_T\right),
     \label{eq:lorenz-rhs}
 \end{equation}
-with $(c_x,c_y,c_z)=(-0.10,1.60,-0.75)$ for $k=2$ and $l=1$. PyTorch
+where $(c_x,c_y,c_z)=(-0.10,1.60,-0.75)$ for $k=2$ and $l=1$. PyTorch
 automatic differentiation computes each time derivative in \eqref{eq:physics-residual}.
 It uses the computational graph of the trial solution. This avoids finite
 differences and allows the residual loss to update $\theta$ through
@@ -88,46 +97,28 @@ back-propagation.
 
 \subsection{Collocation Loss and Optimization}
 
-We sample $N_c=3000$ time points with a Latin-hypercube design on $[0,1]$.
-The points are sampled once and then kept fixed. At every point $t_i$, the
-three residual components are evaluated. The reported physics-only objective is
+The residual defined in~\eqref{eq:physics-residual} must be driven
+toward zero across the entire time domain. Because the residual
+cannot be evaluated at every real number in $[0,1]$, we evaluate it
+at a finite set of collocation points and minimize their
+mean-squared value.We sample $N_c=3000$ time points with a Latin-hypercube design on $[0,1]$.
+The points are sampled once and then kept fixed . For every point $t_i$, the
+three residual components are calculated. The resulting physics-only objective is
 \begin{equation}
     \mathcal{L}(\theta)=
     \frac{1}{3N_c}\sum_{i=1}^{N_c}\left\|r(t_i)\right\|_2^2.
     \label{eq:physics-loss}
 \end{equation}
-No values from the numerical reference trajectory enter \eqref{eq:physics-loss}.
+In \eqref{eq:physics-loss}, no values from the numerical reference trajectory enter.
 The reference is used after training for evaluation.
 
-We use full-batch Adam for 20,000 iterations. The learning rate decreases
-linearly from $10^{-3}$ to $10^{-4}$. Training uses single-precision
-(``float32``) arithmetic and random seed 0. The reported run has no L-BFGS
-stage. The main settings are listed in Table~\ref{tab:pinn-settings}.
-Algorithm~\ref{alg:hard-ic-pinn} summarizes the complete procedure.
+The loss $\mathcal{L}(\theta)$ is minimized with respect to $\theta$ using gradient-based optimization. At each iteration, backpropagation computes $\nabla_\theta \mathcal{L}$ and updates the network parameters. The choice of optimizer, learning-rate schedule  and all remaining training hyperparameters are reported in Section~\ref{sec:setup}. Algorithm~\ref{alg:hard-ic-pinn} summarizes the complete procedure of our model.
 
-\begin{table}[t]
-    \caption{Settings used in the reported PINN run}
-    \label{tab:pinn-settings}
-    \centering
-    \footnotesize
-    \begin{tabular}{ll}
-        \hline
-        Item & Value \\
-        \hline
-        Network & $1$--$60$--$60$--$60$--$60$--$3$ MLP \\
-        Activation & tanh hidden layers; linear output \\
-        Initial condition & hard trial solution \\
-        Collocation & 3,000 fixed LHS points \\
-        Optimizer & full-batch Adam, 20,000 iterations \\
-        Learning rate & $10^{-3}$ to $10^{-4}$, linear decay \\
-        Precision and seed & float32 and 0 \\
-        L-BFGS stage & disabled \\
-        \hline
-    \end{tabular}
-\end{table}
-\FloatBarrier
 
-\begin{algorithm}[t]
+
+
+
+\begin{algorithm}[tbp]
 \caption{Training and evaluation of the hard-IC Lorenz--1960 PINN}
 \label{alg:hard-ic-pinn}
 \begin{algorithmic}[1]
